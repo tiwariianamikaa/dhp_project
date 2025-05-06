@@ -13,3 +13,5 @@ python-dotenv
 nltk
 networkx
 gunicorn
+transformers
+torch
