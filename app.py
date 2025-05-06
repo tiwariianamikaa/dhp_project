@@ -14,9 +14,14 @@ import io
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from threading import Lock
-
+from transformers import BertTokenizer, BertModel
+import torch
 
 app = Flask(__name__, static_url_path='/static')
+# Load BERT model and tokenizer once
+bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+bert_model = BertModel.from_pretrained('bert-base-uncased')
+
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -127,7 +132,15 @@ def extract_text_from_doc(file_path):
 @app.route('/')
 def home():
     return send_file(os.path.join(BASE_DIR, 'templates', 'index2.html'))
-
+def get_bert_embedding(text):
+    try:
+        inputs = bert_tokenizer(text, return_tensors='pt', truncation=True, padding=True, max_length=512)
+        with torch.no_grad():
+            outputs = bert_model(**inputs)
+        return outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+    except Exception as e:
+        print(f"BERT embedding error: {e}")
+        return None
 @app.route('/upload', methods=['GET'])
 def upload_page():
     return send_file(os.path.join(BASE_DIR, 'templates', 'index.html'))
@@ -192,6 +205,33 @@ def upload_cv():
 
     except Exception as e:
         return jsonify({'error': f'Error processing CV: {str(e)}'}), 500
+# Optional: Add BERT-based similarity
+    try:
+        job_texts = df['combined'].tolist()
+        job_embeddings = [get_bert_embedding(text) for text in job_texts]
+        cv_embedding = get_bert_embedding(cv_text)
+    
+        if cv_embedding is not None and all(emb is not None for emb in job_embeddings):
+            similarities = [cosine_similarity(
+                torch.tensor(cv_embedding).reshape(1, -1),
+                torch.tensor(job_emb).reshape(1, -1)
+            ).item() for job_emb in job_embeddings]
+    
+            df['bert_score'] = similarities
+            bert_matches = df[df['bert_score'] > 0].sort_values(by='bert_score', ascending=False)
+            bert_matches = bert_matches.drop_duplicates(subset=['URL', 'Profile Name'], keep='first').head(10)
+            bert_matches['percentage'] = (bert_matches['bert_score'] * 100).round(2)
+    
+            results_bert = bert_matches[[
+                'Profile Name', 'Company Name', 'Skills Required', 'URL', 'Salary', 'City', 'percentage'
+            ]].fillna('').to_dict(orient='records')
+    
+            # Optionally save or combine with TF-IDF results
+            with open(os.path.join(BASE_DIR, 'static', 'matches_bert.json'), 'w', encoding='utf-8') as f:
+                json.dump(results_bert, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"BERT matching error: {e}")
+
 
 @app.route('/results', methods=['GET'])
 def get_results():
